@@ -1,0 +1,4 @@
+interface:
+  display_name: "开发罗盘"
+  short_description: "按需路由需求分析、领域设计、开发规划与测试驱动流程"
+  default_prompt: "使用 $navigate-software-development 按需选择需求分析、领域设计、开发规划或测试驱动来处理这个任务。"
