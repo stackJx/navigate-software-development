@@ -36,6 +36,7 @@ flowchart LR
 | [领域设计](references/2-ddd-design.md) | 复杂规则、状态迁移、模型边界或一致性门禁命中时选择 | 统一语言、Context Map、四色模型、聚合、Port 与一致性合同 |
 | [开发思路](references/3-development-planning.md) | **必选并输出** | 现状映射、纵向切片、依赖关系和可执行计划 |
 | [测试驱动](references/4-tdd.md) | 实现、缺陷修复、回归保护或测试设计门禁命中时选择 | 测试合同、红—绿—重构循环与验证证据 |
+| [走查示例](references/5-worked-example.md) | 首次执行或不确定输出形态时对照 | 技术栈中立的端到端示例(跳过路径 + 全命中路径) |
 
 ## 固定骨架，按需增强
 
@@ -127,12 +128,13 @@ navigate-software-development/
     ├── 1-requirements-analysis.md
     ├── 2-ddd-design.md
     ├── 3-development-planning.md
-    └── 4-tdd.md
+    ├── 4-tdd.md
+    └── 5-worked-example.md
 ```
 
 - `SKILL.md`：主路由、选择门禁和跨阶段规则。
 - `agents/openai.yaml`：Codex 界面名称和默认调用提示。
-- `references/`：模块 1、3 固定加载，模块 2、4 按门禁加载。
+- `references/`：模块 1、3 固定加载，模块 2、4 按门禁加载，模块 5 按需对照。
 
 ## 资料基础
 
