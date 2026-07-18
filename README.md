@@ -143,3 +143,7 @@ navigate-software-development/
 领域设计部分参考并重新提炼了 [fuzhengwei/xfg-ddd-skills](https://github.com/fuzhengwei/xfg-ddd-skills) 中可迁移的思想，同时移除了固定语言、框架、目录、命名后缀和模式数量阈值。需求分析、开发规划与测试驱动部分则以通用软件工程实践为基础整合。
 
 本项目关注的是如何根据任务选择合适的方法，而不是推广某一种固定架构。
+
+## 社区链接
+
+- [LINUX DO](https://linux.do/)
