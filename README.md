@@ -125,6 +125,7 @@ $navigate-software-development
 navigate-software-development/
 ├── SKILL.md
 ├── README.md
+├── LICENSE
 ├── agents/
 │   ├── openai.yaml
 │   └── navigator-worker.toml
@@ -140,6 +141,10 @@ navigate-software-development/
 - `agents/openai.yaml`：Codex 界面名称和默认调用提示。
 - `agents/navigator-worker.toml`：子智能体委派的预定义工作单元模板（技术栈中立，默认只读；复制到 `~/.codex/agents/` 或项目 `.codex/agents/` 后可按 `agent_type` 引用）。
 - `references/`：模块 1、3 固定加载，模块 2、4 按门禁加载，模块 5 按需对照。
+
+## 许可证
+
+本项目使用 [MIT License](LICENSE)。
 
 ## 资料基础
 
