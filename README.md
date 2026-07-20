@@ -47,6 +47,7 @@ flowchart LR
 - 纯分析、纯方案和非可执行文档，不进入编码或红—绿—重构。
 - 设计模式必须由真实变化点驱动，允许结论是“不使用模式”。
 - 不确定两个必选产物该写多长、长什么样时，对照 [走查示例](references/5-worked-example.md)（含跳过路径与全命中路径两种形态）。
+- 复杂任务可按门禁把独立、无共享状态的子任务委派给 Codex 子智能体并行推进，再扇入合并回两个必选章节（默认 solo，开启 `multi_agent` 后生效；详见 SKILL.md「子智能体委派」节）。
 
 ## 安装
 
@@ -125,7 +126,8 @@ navigate-software-development/
 ├── SKILL.md
 ├── README.md
 ├── agents/
-│   └── openai.yaml
+│   ├── openai.yaml
+│   └── navigator-worker.toml
 └── references/
     ├── 1-requirements-analysis.md
     ├── 2-ddd-design.md
@@ -136,6 +138,7 @@ navigate-software-development/
 
 - `SKILL.md`：主路由、选择门禁和跨阶段规则。
 - `agents/openai.yaml`：Codex 界面名称和默认调用提示。
+- `agents/navigator-worker.toml`：子智能体委派的预定义工作单元模板（技术栈中立，默认只读；复制到 `~/.codex/agents/` 或项目 `.codex/agents/` 后可按 `agent_type` 引用）。
 - `references/`：模块 1、3 固定加载，模块 2、4 按门禁加载，模块 5 按需对照。
 
 ## 资料基础
