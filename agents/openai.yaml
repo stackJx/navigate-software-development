@@ -1,4 +1,4 @@
 interface:
   display_name: "开发罗盘"
-  short_description: "固定输出需求分析与开发思路，按需加入领域设计和测试驱动"
-  default_prompt: "使用 $navigate-software-development 先输出需求分析，再按需做领域设计，随后输出开发思路，并按门禁决定是否进入 TDD。"
+  short_description: "开发前先输出需求分析、开发思路与验收标准，再按需加入领域设计和测试驱动"
+  default_prompt: "使用 $navigate-software-development 先只读调查，并在任何变更前依次输出需求分析、开发思路和验收标准，再按合同开发与验证。"
