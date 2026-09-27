@@ -1,9 +1,8 @@
 name = "navigator_worker"
-description = "开发罗盘（navigate-software-development）的通用委派工作单元。具体角色（需求角色梳理 / 聚合战术设计 / 切片实现 / 测试层等）由 spawn 时的 message 指定。"
+description = "开发罗盘（navigate-software-development）的只读委派工作单元，用于需求梳理、领域设计、测试设计与审查；具体任务由派发消息指定。"
 model_reasoning_effort = "high"
-# 默认只读——委派多用于需求梳理、领域建模、测试设计、审查等分析类工作。
-# 若委派实现类切片（编码/改文件），把本行改为 sandbox_mode = "workspace-write"，
-# 且实现类子任务应串行而非并行，避免多个子代理争用同一文件/契约/迁移。
+# 保持只读；实现任务使用 navigator-implementer.toml 模板或环境已有的可写子代理。
+# 模板存在不代表已注册，实际能力与权限以运行环境为准。
 sandbox_mode = "read-only"
 
 developer_instructions = """
@@ -12,7 +11,8 @@ developer_instructions = """
 ## 边界
 - 只处理 message 中明确指定的**单一**子域/切片，不扩张范围、不接管其他子任务。
 - 不再递归 spawn 子代理；你是叶子节点。
-- 你不继承协调者的会话历史。message 里若缺关键上下文（路径、范围、约束、期望产出格式），按 message 所给信息尽力完成，并在产出中标注缺口,而不是臆测。
+- 只读分析，不修改文件、不运行会产生文件或修改环境的命令；收到实现任务时报告角色或权限不匹配。
+- 不假设会话历史完整继承。message 里若缺关键上下文（路径、范围、约束、期望产出格式），只读核查可确认的信息，并在产出中标注缺口，不臆测授权。
 
 ## 工作原则（继承开发罗盘约束）
 - **技术栈中立**：方法产物不绑定具体语言/框架，适配目标项目既有约定。
