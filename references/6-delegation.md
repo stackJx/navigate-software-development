@@ -64,10 +64,17 @@
 | Claude Code / Antigravity 等 | 当前会话是否支持子代理、角色选择及工作区隔离 | 不根据平台名称推定功能默认开启 |
 | 无可用子代理的环境 | 是否确实缺少创建工具，或子代理仅有只读权限 | 按下节的模式规则处理，不虚构派发成功 |
 
-本项目提供两份职责模板：
+本项目为两个平台各提供一套职责相同的模板：
 
-- [navigator-worker.toml](../agents/navigator-worker.toml)：只读调研、设计与审查，保留 `sandbox_mode = "read-only"`。
-- [navigator-implementer.toml](../agents/navigator-implementer.toml)：限定范围的实现叶子节点，使用 `sandbox_mode = "workspace-write"`，并汇报修改与验证证据。
+| 角色 | Claude Code（`.md`，frontmatter 限定工具） | Codex（`.toml`，sandbox 限定权限） |
+| --- | --- | --- |
+| 只读调研、设计与审查 | [claude/navigator-worker.md](../agents/claude/navigator-worker.md)，`tools: Read, Grep, Glob` | [codex/navigator-worker.toml](../agents/codex/navigator-worker.toml)，`sandbox_mode = "read-only"` |
+| 限定范围的实现叶子节点 | [claude/navigator-implementer.md](../agents/claude/navigator-implementer.md)，额外开放 `Edit, Write, Bash` | [codex/navigator-implementer.toml](../agents/codex/navigator-implementer.toml)，`sandbox_mode = "workspace-write"` |
+
+接入方式：
+
+- **Claude Code**：把 `agents/claude/*.md` 复制或软链接到项目 `.claude/agents/` 或用户级 `~/.claude/agents/`，用 `/agents` 确认已加载后，按名称（`navigator-worker` / `navigator-implementer`）派发。
+- **Codex**：按当前 Codex 版本的自定义代理机制注册 `agents/codex/*.toml`；工具名与加载方式以当前环境说明为准。
 
 模板文件存在不代表已经注册为可调用角色，也不能提升运行环境实际授予的权限。使用环境已有的合适角色与权限；没有自定义角色加载能力时，可把任务要求传入可用子代理。不要自动修改用户全局配置、将只读模板改成可写，或把只读子代理当作实现代理。
 
