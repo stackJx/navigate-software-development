@@ -74,7 +74,7 @@
 接入方式：
 
 - **Claude Code**：把 `agents/claude/*.md` 复制或软链接到项目 `.claude/agents/` 或用户级 `~/.claude/agents/`，用 `/agents` 确认已加载后，按名称（`navigator-worker` / `navigator-implementer`）派发。
-- **Codex**：按当前 Codex 版本的自定义代理机制注册 `agents/codex/*.toml`；工具名与加载方式以当前环境说明为准。
+- **Codex**：先核对当前平台和版本是否支持自定义代理目录及角色选择。支持时，把 `agents/codex/*.toml` 复制到项目 `.codex/agents/`（项目需被 Codex 信任）或用户级 `~/.codex/agents/`；仅在实际工具提供 `agent_type` 参数时，按文件内的 `name` 字段选择 `navigator_worker` / `navigator_implementer`。不支持该参数或加载机制时，把职责、范围和验收要求传给当前可用的子代理，并核实其实际工具与写权限。
 
 模板文件存在不代表已经注册为可调用角色，也不能提升运行环境实际授予的权限。使用环境已有的合适角色与权限；没有自定义角色加载能力时，可把任务要求传入可用子代理。不要自动修改用户全局配置、将只读模板改成可写，或把只读子代理当作实现代理。
 

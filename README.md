@@ -18,8 +18,8 @@
 
 ```mermaid
 flowchart TD
-    A["用户提出任务"] --> Q{"是否为改错字等<br/>微小改动？"}
-    Q -- "是" --> S["方案简化为 1~2 行<br/>依然先说明再改"]
+    A["用户提出任务"] --> Q{"是否满足极简档？<br/>(错字/注释/纯重命名)"}
+    Q -- "是" --> S["三项各 1~2 句<br/>依然先说明再改"]
     Q -- "否" --> X["查阅代码与文档<br/>(只读，不跑测试)"]
     X --> R["明确需求与用例"]
     R --> D{"逻辑很复杂，<br/>需要领域设计？"}
@@ -56,7 +56,7 @@ flowchart TD
 >
 > 退出：“本任务切回默认模式，主会话可以直接编码。”
 
-仓库提供只读分析模板 [`navigator-worker.toml`](agents/navigator-worker.toml) 和可写实现模板 [`navigator-implementer.toml`](agents/navigator-implementer.toml)，供有需要的环境接入。模板文件不代表代理已注册或可调用，实际工具与权限决定可用性；Skill 不会自动修改你的全局配置。详细分工见 [委派规则](references/6-delegation.md)。
+仓库为 Claude Code 和 Codex 各提供一套职责相同的子代理模板：只读分析的 `navigator-worker` 与可写实现的 `navigator-implementer`（Claude Code 版见 [`agents/claude/`](agents/claude/)，Codex 版见 [`agents/codex/`](agents/codex/)）。模板需要按下方「安装方式」手动接入；模板文件不代表代理已注册或可调用，实际工具与权限决定可用性，Skill 不会自动修改你的全局配置。详细分工见 [委派规则](references/6-delegation.md)。
 
 ## 模块介绍
 
@@ -67,7 +67,7 @@ flowchart TD
 | [开发思路](references/3-development-planning.md) | **必选，改代码前必须输出** | 现状分析、分步实现计划、依赖关系与潜在风险 |
 | [测试驱动](references/4-tdd.md) | 修复 Bug、开发核心业务规则、避免回归问题时按需使用 | 编写失败测试（复现问题）→ 编写代码（测试通过）→ 代码重构 |
 | [版本控制](references/7-git-flow.md) | **仅在你明确要求时使用**（如指定分支名、要求规范提交或提 PR） | 分支策略、Commit 规范、合并与代码评审流程 |
-| [知识沉淀](references/8-knowledge-base.md) | **默认开启**，代码改完后评估是否有值得留存的经验 | 更新项目知识库（默认 `KNOWLEDGE.md`），记录架构决策与踩坑细节 |
+| [知识沉淀](references/8-knowledge-base.md) | **默认开启**，代码改完后评估是否有值得留存的经验 | 优先更新已有约定文件（`CLAUDE.md`/`AGENTS.md`/`docs/`），没有时新建 `KNOWLEDGE.md` |
 | [走查示例](references/5-worked-example.md) | 不确定方案该怎么写时参考 | 提供三种典型场景的完整示例（普通任务 / TDD 任务 / 复杂 DDD 任务） |
 | [子代理委派](references/6-delegation.md) | 默认模式按需委派；协调模式的实现任务必须委派 | 文件归属、实现派发、审查验收与失败处理；独立任务可并行 |
 
@@ -75,14 +75,14 @@ flowchart TD
 
 ## 核心规则
 
-1. **先说明再动手**：在做任何修改代码的动作前，必须先在回复开头按顺序输出三部分内容：`## 需求分析`、`## 开发思路`、`## 验收标准`。
+1. **先说明再动手**：在做任何写操作之前，必须先按顺序向你输出三部分内容：`## 需求分析`、`## 开发思路`、`## 验收标准`。
 2. **只读先行**：前期可以搜索、读文件、看 Git 状态；但在方案发给用户前，严禁新建/修改文件、安装依赖、提交代码或执行任何有副作用的命令。
 3. **测试在方案发出后再跑**：跑测试可能会生成缓存、修改测试数据库或产生构建产物，因此方案发出前只看测试代码，不实跑测试；方案发出后再跑基准测试。
-4. **极小改动可简写**：如果只是改个错别字、修注释、改文案等一眼就能看清的小修小补（且不涉及权限、数据迁移或外部接口），这三部分可以各简写成 1~2 句话，但依然要先发出来再改。
+4. **篇幅按复杂度分档**：极简档（错字、注释、纯重命名等一眼可确认的单文件改动）三项各 1~2 句；标准档（目标明确的 Bug 或小功能，可含简单跨模块改动）各 3~5 条要点；完整档（复杂业务规则、复杂状态流转、跨模块一致性或需求不明确）完整展开。你说“直接改”时压缩篇幅、说“详细方案”时升到完整档，但三个标题始终要在改代码前发出来。
 5. **不搞过度设计**：普通的 CRUD、临时小脚本直接写代码即可，不强套领域模型（DDD）。只有业务模型复杂、状态机多变时才做针对性设计。
 6. **修 Bug 优先测试先行**：遇到 Bug，理清原因后先写一个能稳定复现的失败用例，然后再修代码，确保以后不会再犯。
 7. **Git 流程不强加**：除非你明确要求（如“帮我建个 feature 分支”、“用 Conventional Commits 提交”），否则不默认增加复杂的 Git 分支与合并流程。
-8. **沉淀真正有价值的经验**：代码改完后，如果发现了非显然的暗坑、关键架构决策或外部接口特殊约定，顺手记录到项目知识库（如 `KNOWLEDGE.md`），持续维护更新，不堆流水账。
+8. **沉淀真正有价值的经验**：代码改完后，如果发现了非显然的暗坑、关键架构决策或外部接口特殊约定，优先写进项目已有的约定文件（`CLAUDE.md`、`AGENTS.md`、`docs/` 等），没有时才新建 `KNOWLEDGE.md`；持续维护更新，不堆流水账。
 9. **遵守执行模式**：协调模式下，所有具体编码都由子代理完成，主会话负责审查验收；子代理是叶子实现者，不递归委派，也不套用主会话禁编码规则。
 
 ## 安装方式
@@ -107,6 +107,23 @@ ln -s ~/.codex/skills/navigate-software-development ~/.claude/skills/navigate-so
 git -C ~/.codex/skills/navigate-software-development pull --ff-only
 ```
 
+### 接入子代理（使用协调模式时需要）
+
+Claude Code：把模板软链接到用户级（或项目级 `.claude/agents/`）代理目录，然后在会话中用 `/agents` 确认已加载：
+```bash
+mkdir -p ~/.claude/agents
+ln -s ~/.claude/skills/navigate-software-development/agents/claude/navigator-worker.md ~/.claude/agents/
+ln -s ~/.claude/skills/navigate-software-development/agents/claude/navigator-implementer.md ~/.claude/agents/
+```
+
+Codex：先核对当前平台和版本是否支持自定义代理目录。支持时，把模板复制到用户级 `~/.codex/agents/`（或受信任项目的 `.codex/agents/`）：
+```bash
+mkdir -p ~/.codex/agents
+cp ~/.codex/skills/navigate-software-development/agents/codex/*.toml ~/.codex/agents/
+```
+
+若实际工具提供 `spawn_agent.agent_type`，可按模板中的 `name` 字段选择 `navigator_worker` / `navigator_implementer`；没有该参数或加载机制时，把职责、范围和验收要求传给当前可用的子代理，并核实其工具与写权限。上述模板曾在 Claude Code 与 Codex CLI 0.149 的测试环境中验证 worker 拒绝写任务、implementer 执行修改；这一历史结果不保证当前桌面版、CLI 或其他宿主拥有相同接口。模板不会自行安装或更改全局配置。
+
 ## 使用示例
 
 可以直接在对话中自然描述需求，也可以显式调用 Skill（Codex 用 `$navigate-software-development`，Claude Code 用 `/navigate-software-development`）。
@@ -123,9 +140,13 @@ git -C ~/.codex/skills/navigate-software-development pull --ff-only
 ### 4. 完整功能开发
 > “实现批量审批功能。先帮我检查现有代码，在改动前输出需求分析、开发思路和验收标准，确认后再开始实现和测试。”
 
-### 5. 极小改动（快速处理）
+### 5. 极简档改动（快速处理）
 > “把 README 里的‘限届上下文’改成‘限界上下文’。”
 > *(此时会自动简化三项说明，各用 1~2 句话说明，随后完成修改)*
+
+### 6. 想少看点方案
+> “满 100 减 20 的券正好 100 元用不了，直接改就行。”
+> *(会压缩篇幅：三项各 1~3 条要点，但标题仍在改代码前给出，回归测试照常规划)*
 
 ## 设计原则
 
@@ -141,7 +162,7 @@ git -C ~/.codex/skills/navigate-software-development pull --ff-only
 
 AI 处理开发任务时，分为前后两次输出：
 
-1. **动手前（方案输出）**：必须先在回复开头给出：
+1. **动手前（方案输出）**：必须在任何写操作之前给出：
    - `## 需求分析`
    - `## 开发思路`
    - `## 验收标准`
@@ -155,7 +176,27 @@ AI 处理开发任务时，分为前后两次输出：
 
 ## 自检说明
 
-如果你对 `SKILL.md` 或相关参考文档做了修改，可以参考 [tests/gate-cases.md](tests/gate-cases.md) 中的用例对 AI 进行人工抽查，检查“先输出三项方案再改代码”、“按需引入 DDD/TDD/Git Flow”和两种执行模式的边界。这些是行为回归场景，文档或格式检查通过不代表行为用例已经跑通。
+修改规则或判定器后，先运行离线自检。这一步使用构造事件与模拟进程，不调用模型、不产生 API 费用：
+
+```bash
+python3 -B -m unittest discover -s tests -p 'test_gate_runner.py' -v
+```
+
+需要验证模型实际行为时，再使用已登录的 `claude` CLI 做串行小样本回归。这一步会调用模型并产生费用，先检查单条结果及原始日志，再决定是否扩大范围：
+
+```bash
+python3 tests/run_gate_cases.py -c B1 -r 1 -j 1 --max-budget-usd 1 --timeout 120 --label smoke
+```
+
+脚本在临时 fixture 仓库中调用 `claude -p`，支持 16 个用例：A1/A2/A4/A5、B1–B6、E1/E3、G6、I1–I3。它检查写操作前是否出现有内容的可见三标题、实现任务是否实际改动目标文件、纯方案/问答是否零写操作，以及知识文件位置；篇幅和是否写入知识文件是软指标，不判断知识内容质量。代码块、引用、思考和子代理回复不算主会话已发出方案。
+
+默认串行运行，每次调用预算上限默认为 1 美元；预算参数交由 CLI 执行，不能据此保证第三方网关的实际计费。遇到 API、额度、超时或其他运行错误，脚本停止派发新请求；已在途的并行请求仍可能完成并计费，尚未启动的请求标为 SKIPPED。每次运行保存 stdout、stderr、摘要，总体摘要另记各用例状态。ERROR 表示运行故障，INCOMPLETE 表示汇总不完整；不能通过删除错误样本把混合结果判成 PASS。缺少费用字段或超时时，费用记为未知，不报为零；`cost_known` 和 `unknown_cost_runs` 区分已记录费用与未知部分。
+
+Shell 识别采用保守白名单，支持常见只读查询和简单管道，但复杂循环、替换或未知语法会按写操作处理，可能需要人工排除误报。这是日志判定启发式，不能代替沙箱或完整的副作用审计。详细状态语义见 [门禁用例](tests/gate-cases.md)。
+
+离线自检只证明判定器在所测输入下的行为，模型回归也只覆盖实际执行的用例与断言。A3/A6–A9 尚无自动 fixture；DDD 深度、模块选用、TDD 顺序、业务实现正确性、协调模式及其余知识沉淀场景仍需按 [tests/gate-cases.md](tests/gate-cases.md) 人工核查。B6/I2 的要点条数与 I1 的简写说明也未自动检查。用 `--skill-root <旧版本目录>` 可比较不同版本，必须分别记录版本、模型、有效样本、失败、错误与未执行项。
+
+历史回归曾同时出现标题门禁失败和额度错误，不能作为当前版本全部通过的依据。未执行、因错误中断或需要人工判断的部分必须明确标为未验证。本次离线结果、历史日志重放、Claude 超时及本机 Codex 三个独立上下文样本分别记录在 [2026-09-29 验证报告](tests/validation-2026-09-29.md)，没有宣称全量行为通过或新版通过率不降低。
 
 ## 目录结构
 
@@ -167,8 +208,12 @@ navigate-software-development/
 ├── LICENSE                           # 开源许可证 (MIT)
 ├── agents/
 │   ├── openai.yaml                   # Codex 界面配置与提示词
-│   ├── navigator-worker.toml         # 只读分析子代理模板
-│   └── navigator-implementer.toml    # 可写实现子代理模板（需环境接入）
+│   ├── claude/                       # Claude Code 子代理模板（需接入）
+│   │   ├── navigator-worker.md       # 只读分析
+│   │   └── navigator-implementer.md  # 可写实现
+│   └── codex/                        # Codex 子代理模板（需接入）
+│       ├── navigator-worker.toml     # 只读分析
+│       └── navigator-implementer.toml # 可写实现
 ├── references/                       # 详细参考模块
 │   ├── 1-requirements-analysis.md    # 需求分析规范（必选）
 │   ├── 2-ddd-design.md               # 领域设计规范（复杂业务按需引入）
@@ -179,7 +224,10 @@ navigate-software-development/
 │   ├── 7-git-flow.md                 # Git 分支与提交规范（用户明确要求时引入）
 │   └── 8-knowledge-base.md           # 项目知识库沉淀（改动收尾时维护）
 └── tests/
-    └── gate-cases.md                 # 规则自查用例
+    ├── gate-cases.md                 # 规则自查用例
+    ├── run_gate_cases.py             # claude -p 行为回归脚本（会产生 API 费用）
+    ├── test_gate_runner.py           # 判定器离线自检（不调用模型）
+    └── validation-2026-09-29.md      # 分层验证结果与未验证项
 ```
 
 ## 许可证

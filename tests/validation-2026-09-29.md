@@ -1,0 +1,57 @@
+# 0.7.0 验证记录（2026-09-29）
+
+最终 Skill 为本次 0.7.0 工作区版本，`SKILL.md` 共 124 行、description 169 字符，SHA256 为 `b268b857dfdde9f6f2996d1807b73adba24688073b976fd19041734ff9c522db`；判定器版本为提交 `a280e06`。该提交只包含 runner 与离线测试，不包含本次 Skill/文档修改。下述 Claude 环境探测使用修订前工作区快照，未测试这个最终 Skill 版本。
+
+本次完成规则与判定器修补。离线自检和本机 Codex 三个独立上下文样本通过；Claude 探测未完成，**尚不能证明全量行为通过，也未达成“新版通过率不低于旧版”的原验收项**。
+
+## 结果矩阵
+
+| 验证层 | 实际结果 | 结论范围 |
+| --- | --- | --- |
+| 判定器离线测试 | 36 项通过，主会话最终复测耗时 0.029 秒 | 验证构造事件、模拟 CLI、错误中止、费用未知等逻辑；未调用模型 |
+| 静态检查 | `git diff --check`、Skill `quick_validate` 通过；当时 14 个已跟踪 Markdown 的本地链接/锚点及 U+FFFD 扫描为 0 错误 | 格式与结构证据，不证明模型行为 |
+| 历史 baseline 日志机器回放 | 7 PASS / 3 FAIL，有效 10 次；另有原运行错误 22 次 | 旧日志用新判定器重新判定，不是重跑模型 |
+| 历史 final 日志机器回放 | 4 PASS / 5 FAIL，有效 9 次；另有原运行错误 23 次 | 其中 A5 为保守 Shell 误报；人工复核后为 5 次门禁通过、4 次真实失败 |
+| Claude B1 修订前工作区环境探测 | 180.29 秒超时，退出码 143，无 result、无可见文本，写操作 0、文件变化 0 | ERROR；费用未知，不能记为零，也不能记为门禁失败或通过；未继续调用，最终新版 Skill 的 Claude 回归未执行 |
+| 本机 Codex 独立上下文样本 | 错字修改、纯方案、纯问答三个样本逐项通过 | 仅证明本机此次上下文表现，不是 headless runner 或 Claude 验证 |
+
+## 历史回放与误判修正
+
+回放仅调用当前 `analyze` / `judge`，文件变化沿用历史摘要；原始日志未修改。原始目录为 `tests/.runs/20260928-163242-baseline/` 与 `tests/.runs/20260928-163243-final/`，安全汇总为 `tests/.runs/20260929-offline-replay/summary.json`。22/23 次错误来自当时完整运行表 `/tmp/gate-baseline.md`、`/tmp/gate-final.md`，包括没有留下完整原始日志的超时。
+
+旧 A2 失败包含 `command -v` 只读查询误判；当前回放中两组 A2 均通过。final 的 A5-0 第 26 行使用 `for ...; do echo ...; cat ...; done; git log ... | head` 读取文件，当前保守白名单将循环按写处理。人工核对确认该循环无写副作用，单独排除这项误报；机器原判仍保留。B1/B2 缺少写入前可见三标题的失败仍然成立。
+
+机器与人工数字必须分别报告。上述变化来自判定器修正和人工审查，不是模型表现提升；两组大量运行错误、样本不完整且都不是当前新版 Skill 的完整前向回归，不能用于证明新版通过率不降低。
+
+## 本次前向样本证据
+
+- Claude 修订前工作区环境探测：`tests/.runs/20260929-162837-probe-B1-7ac349/metadata.json`、`stdout.jsonl`、`stderr.log`。fixture 在本轮 Skill 最后修订前已复制，因此未包含后续可见回复顺序、纯问答入口与分档修正。单次预算参数 1 美元、超时 180 秒；stdout 仅见两次 Read，第一次参数错误、第二次读取成功后未完成。stderr 有 `unrecognized_model` 警告，但未确认超时根因。
+- Codex 错字：会话日志 `rollout-2026-09-29T16-36-15-01a0ec4e-b222-7dd3-8837-68a388c63827.jsonl` 第 35 行先输出有内容的三标题，第 36 行才调用执行补丁的工具；fixture diff 仅将“限届”改为“限界”，未新增提交。
+- Codex 纯方案：`rollout-2026-09-29T16-37-38-01a0ec4f-f4d2-7263-976e-a3f305ca3a5e.jsonl` 第 43 行输出完整方案；工具操作只读，fixture Git 状态干净。
+- Codex 纯问答：`rollout-2026-09-29T16-39-01-01a0ec51-3954-70f1-a98a-a3b7f8203959.jsonl` 第 15/23/28 行为只读工具，第 37 行直接解释函数，没有方案三标题、写操作或文件变更。
+
+三个 Codex 原始日志位于 `/Users/stackbug/.codex/sessions/2026/09/29/`；fixture 位于 `/var/folders/q2/9dkv1cgx5gl1ph88syyj4tc00000gn/T/nsd-codex-forward-rju3re6x/` 的 `typo/` 与 `plan/`。采用 `fork_turns="none"` 隔离父会话历史，但仍继承平台/用户配置和记忆，并非无外部指令干扰的实验。本报告只记录可见文本、工具顺序及文件证据，不复制思考内容或敏感配置。
+
+## 已知限制与未完成验收
+
+- runner 支持 16 个机器用例及其有限断言，未自动覆盖 A3/A6–A9、协调模式 D/H、E2、G1–G5；DDD/TDD/Git Flow 选用、TDD 顺序、业务实现正确性和知识内容仍需人工验收。目标文件有变化不等于修复正确。
+- B6/I2 要点条数、I1 简写说明未自动检查；I1 保留原输入，用户显式撤销技能或平台指令优先级的影响须人工记录，不能改输入来规避失败。
+- Shell 检测是保守白名单，复杂循环、替换、未知命令可能误报；常见命令参数、别名、外部配置等副作用也未被完整建模。它不能替代沙箱或完整 Shell 语义审计。
+- 最终新版 Skill 的 Claude 回归未执行；最终版本仅完成本机 Codex 三个样本与静态验证。跨模型/跨宿主表现、协调模式强制委派与长期稳定性未验证，本机样本不能补齐这些结论。
+- API/额度/超时错误后停止派发；若显式提高并发，已在途请求仍可能产生费用。`cost_known=false` 或 `unknown_cost_runs>0` 时，已记录费用不是总费用。
+
+## 复现入口
+
+先执行不调用模型的判定器自检：
+
+```bash
+python3 -B -m unittest discover -s tests -p 'test_gate_runner.py' -v
+```
+
+需要再次验证 Claude 时，确认运行条件后从串行单条样本开始，单独留档，不自动扩大或重试：
+
+```bash
+python3 tests/run_gate_cases.py -c B1 -r 1 -j 1 --max-budget-usd 1 --timeout 180 --label followup
+```
+
+该命令会产生模型费用。逐次保存 stdout、stderr、摘要，总体保存 `summary.json`；PASS/FAIL/ERROR/INCOMPLETE/SKIPPED 的定义见 [门禁用例](gate-cases.md)。原始 `tests/.runs/` 为本机忽略目录，未作为发布内容提交；上述外部会话日志和临时 fixture 也可能随本机清理失效。
