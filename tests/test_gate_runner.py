@@ -1,11 +1,15 @@
 """离线校验门禁判定与 CLI 故障处理，不调用模型、不产生 API 费用。"""
 import contextlib
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 import io
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -70,6 +74,24 @@ class GateChecks(unittest.TestCase):
                 self.assertTrue(gate.is_write_command(f"pwd {operator}\ntee README.md"))
                 self.assertFalse(gate.is_write_command(f"git status {operator}\ngit diff"))
 
+    def test_shell_comments_preserve_following_command_boundaries(self):
+        for command in ("pwd # inspect project\nmkdir scratch", "cat README.md # inspect\nrm README.md",
+                        "# inspect first\npwd # directory\ntouch scratch", "echo word#literal > scratch",
+                        "echo \\#literal > scratch", "echo '#literal' > scratch"):
+            with self.subTest(command=command):
+                self.assertTrue(gate.is_write_command(command))
+        for command in ("pwd # inspect project\nls", "pwd # touch scratch\nls",
+                        "echo '# not a comment'\nls", 'echo "# not a comment"\nls',
+                        "echo \\#literal\nls", "echo word#literal\nls"):
+            with self.subTest(command=command):
+                self.assertFalse(gate.is_write_command(command))
+
+    def test_comment_cannot_hide_write_from_plan_only_gate(self):
+        events = [assistant({"type": "tool_use", "name": "Bash",
+                             "input": {"command": "pwd # inspect\nmkdir scratch"}}), assistant(text())]
+        result = dict(gate.analyze(events), changed=[])
+        self.assertIn("纯方案任务出现写操作", gate.judge(gate.CASES["A1"], result))
+
     def test_directory_change_does_not_hide_following_command(self):
         self.assertFalse(gate.is_write_command("cd project && find . -type f"))
         self.assertFalse(gate.is_write_command("cd project; ls -la"))
@@ -118,6 +140,23 @@ class GateChecks(unittest.TestCase):
             with self.subTest(plan=plan):
                 self.assertFalse(gate.headings_in_order(plan))
 
+    def test_fence_close_requires_matching_length_and_only_whitespace(self):
+        for opening, false_close in (("````markdown", "```"), ("~~~~text", "~~~"),
+                                     ("```markdown", "``` still code"), ("~~~text", "~~~ still code"),
+                                     ("```markdown", "~~~")):
+            with self.subTest(opening=opening, false_close=false_close):
+                plan = opening + "\n" + false_close + "\n" + PLAN
+                self.assertFalse(gate.headings_in_order(plan))
+                result = {"before": plan, "all": plan, "writes": ["Edit:README.md"], "changed": ["README.md"]}
+                self.assertTrue(gate.judge(gate.CASES["B1"], result))
+
+    def test_visible_plan_after_valid_fence_still_passes(self):
+        for opening, closing in (("```markdown", "```"), ("~~~~text", "~~~~~  "),
+                                 ("````markdown", "`````\t")):
+            with self.subTest(opening=opening, closing=closing):
+                plan = opening + "\ncode\n" + closing + "\n" + PLAN
+                self.assertTrue(gate.headings_in_order(plan))
+
     def test_only_known_automatic_memory_is_ignored(self):
         home = str(Path.home())
         for path in (home + "/.claude/settings.json", home + "/.claude-evil/a",
@@ -160,7 +199,8 @@ class InvocationChecks(unittest.TestCase):
 
     def invoke(self, cli, status=None):
         status = status or subprocess.CompletedProcess([], 0, " M README.md\n", "")
-        with patch.object(gate, "make_fixture"), patch.object(gate.subprocess, "run", side_effect=[cli, status]):
+        with patch.object(gate, "make_fixture"), patch.object(gate, "run_cli", side_effect=[cli]), \
+             patch.object(gate.subprocess, "run", return_value=status):
             result = gate.run_once("B1", 0, self.args, self.logs)
         self.assertTrue((self.logs / "B1-0.jsonl").is_file())
         self.assertTrue((self.logs / "B1-0.stderr.log").is_file())
@@ -247,10 +287,69 @@ class InvocationChecks(unittest.TestCase):
     def test_budget_is_forwarded_to_cli(self):
         cli = subprocess.CompletedProcess([], 0, stream(assistant(text(), write()), success()), "")
         status = subprocess.CompletedProcess([], 0, " M README.md\n", "")
-        with patch.object(gate, "make_fixture"), patch.object(gate.subprocess, "run", side_effect=[cli, status]) as run:
+        with patch.object(gate, "make_fixture"), patch.object(gate, "run_cli", return_value=cli) as run, \
+             patch.object(gate.subprocess, "run", return_value=status):
             gate.run_once("B1", 0, self.args, self.logs)
         command = run.call_args_list[0].args[0]
         self.assertEqual(command[command.index("--max-budget-usd") + 1], "1.0")
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX process-group regression")
+class ProcessChecks(unittest.TestCase):
+    def test_timeout_stops_children_even_after_cli_parent_exits(self):
+        original_popen = subprocess.Popen
+        for parent_exits in (False, True):
+            with self.subTest(parent_exits=parent_exits), tempfile.TemporaryDirectory() as tmp:
+                logs = Path(tmp)
+                pids, marker = logs / "pids.json", logs / "late-write"
+                child = ("import pathlib,signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+                         "time.sleep(1.2); pathlib.Path("
+                         + repr(str(marker)) + ").write_text('child still running')")
+                parent = ("import json,os,pathlib,subprocess,sys,time\n"
+                          "child=subprocess.Popen([sys.executable,'-B','-c'," + repr(child) + "])\n"
+                          "pathlib.Path(" + repr(str(pids)) + ").write_text(json.dumps("
+                          "{'parent':os.getpid(),'child':child.pid,'group':os.getpgrp()}))\n"
+                          "print(" + repr(stream(assistant(text()))) + ",flush=True)\n"
+                          "print('partial stderr',file=sys.stderr,flush=True)\n"
+                          + ("sys.exit(0)\n" if parent_exits else "time.sleep(30)\n"))
+
+                def offline_popen(command, *args, **kwargs):
+                    if command[0] == "claude":
+                        command = [sys.executable, "-B", "-c", parent]
+                    return original_popen(command, *args, **kwargs)
+
+                args = SimpleNamespace(skill_root=gate.SKILL_ROOT, model=None, max_turns=3,
+                                       timeout=0.5, max_budget_usd=1.0)
+                try:
+                    # Match run_jobs: Popen must be safe when started from a worker thread.
+                    with patch.object(gate.subprocess, "Popen", side_effect=offline_popen), \
+                         ThreadPoolExecutor(max_workers=1) as pool:
+                        result = pool.submit(gate.run_once, "B1", 0, args, logs).result(timeout=10)
+                    observed = json.loads(pids.read_text())
+                    time.sleep(1.2)
+                    self.assertFalse(marker.exists(), "child wrote after run_once timed out")
+                    for pid in (observed["parent"], observed["child"]):
+                        # Linux 容器的 init 可能延迟回收孤儿僵尸；它们已经不能执行或写入。
+                        state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                                               capture_output=True, text=True, check=False).stdout.strip()
+                        self.assertTrue(not state or state.startswith("Z"), f"process {pid} still running: {state}")
+                    self.assertIn("超时", result[1][0])
+                    self.assertIsNone(result[2])
+                    self.assertIn(PLAN, json.loads((logs / "B1-0.jsonl").read_text())["message"]["content"][0]["text"])
+                    self.assertEqual((logs / "B1-0.stderr.log").read_text(), "partial stderr\n")
+                    summary = json.loads((logs / "B1-0.summary.json").read_text())
+                    self.assertEqual(summary["status"], "ERROR")
+                    self.assertFalse(summary["cost_known"])
+                finally:
+                    # A failing regression must never leave its own child running or kill our test group.
+                    if pids.exists():
+                        observed = json.loads(pids.read_text())
+                        for pid in (observed["child"], observed["parent"]):
+                            try:
+                                if os.getpgid(pid) == observed["group"]:
+                                    os.kill(pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
 
 
 class MainChecks(unittest.TestCase):

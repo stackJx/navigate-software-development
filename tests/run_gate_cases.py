@@ -24,9 +24,11 @@ DDD 深度、模块选用理由、协调模式等语义判定仍需人工抽查�
 import argparse
 import json
 import math
+import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 from collections import Counter, namedtuple
@@ -172,13 +174,42 @@ def is_read_command(words: list) -> bool:
     return sub == "stash" and options in (["list"], ["show"])
 
 
+def strip_shell_comments(cmd: str) -> str:
+    """只去掉未引用、位于词首的注释，保留换行交给 shlex 识别命令边界。"""
+    out, quote, word_start, i = [], None, True, 0
+    while i < len(cmd):
+        char = cmd[i]
+        if char == "\\" and quote != "'" and i + 1 < len(cmd):
+            out.extend(cmd[i:i + 2])
+            if cmd[i + 1] != "\n":
+                word_start = False
+            i += 2
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+        elif char in {"'", '"'}:
+            quote, word_start = char, False
+        elif char == "#" and word_start:
+            end = cmd.find("\n", i)
+            i = len(cmd) if end < 0 else end
+            continue
+        else:
+            word_start = char.isspace() or char in "|&;<>()"
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
 def is_write_command(cmd: str) -> bool:
+    cmd = strip_shell_comments(cmd)
     # 引号内命令替换也可能写文件；heredoc、分组等复杂语法统一保守处理。
     if re.search(r"\$\(|`", re.sub(r"'[^']*'", "", cmd)):
         return True
     lexer = shlex.shlex(cmd, posix=True, punctuation_chars="|&;<>()\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
         tokens = list(lexer)
     except ValueError:
@@ -249,14 +280,16 @@ def analyze(events: list) -> dict:
 def visible_prose(text: str) -> str:
     lines, fence = [], None
     for line in text.splitlines():
-        marker = re.match(r"^\s*(`{3,}|~{3,})", line)
-        if marker:
-            if fence is None:
-                fence = marker[1][0]
-            elif marker[1][0] == fence:
+        if fence is not None:
+            closing = re.fullmatch(r" {0,3}(`{3,}|~{3,})[ \t]*", line)
+            if closing and closing[1][0] == fence[0] and len(closing[1]) >= fence[1]:
                 fence = None
             continue
-        if fence is None and not line.lstrip().startswith(">"):
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if opening and (opening[1][0] != "`" or "`" not in opening[2]):
+            fence = (opening[1][0], len(opening[1]))
+            continue
+        if not line.lstrip().startswith(">"):
             lines.append(line)
     return "\n".join(lines)
 
@@ -350,6 +383,39 @@ def save_logs(log_dir: Path, case_id: str, idx: int, stdout: str, stderr: str, s
     prefix.with_suffix(".summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def run_cli(cmd: list, root: Path, timeout: float) -> subprocess.CompletedProcess:
+    """POSIX 独立进程组；清理同组后代，不覆盖主动 setsid 脱离组的程序。"""
+    if os.name != "posix":
+        raise OSError("模型回归目前仅支持 POSIX 进程组清理，未启动 CLI")
+    with subprocess.Popen(cmd, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, start_new_session=True) as proc:
+        def kill_group():
+            # 即使主 CLI 已退出，持有输出管道的后代也可能仍在运行，不能先检查 poll()。
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            kill_group()
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired as drain:
+                # 脱离进程组的程序可能保留管道；限定收尾时间并保留已读取的输出。
+                stdout, stderr = drain.stdout or exc.stdout, drain.stderr or exc.stderr
+                proc.stdout.close()
+                proc.stderr.close()
+                proc.wait()
+            exc.output, exc.stderr = stdout, stderr
+            raise
+        finally:
+            kill_group()
+            proc.wait()
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
 def run_once(case_id: str, idx: int, args, log_dir: Path) -> tuple:
     case = CASES[case_id]
     stdout, stderr, changed, errors, returncode = "", "", [], [], None
@@ -363,7 +429,7 @@ def run_once(case_id: str, idx: int, args, log_dir: Path) -> tuple:
             if args.model:
                 cmd += ["--model", args.model]
             cmd += ["--allowedTools", *TEST_TOOLS]
-            proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=args.timeout)
+            proc = run_cli(cmd, root, args.timeout)
             stdout, stderr, returncode = proc.stdout, proc.stderr, proc.returncode
         except subprocess.TimeoutExpired as exc:
             stdout, stderr = as_text(exc.stdout), as_text(exc.stderr)
