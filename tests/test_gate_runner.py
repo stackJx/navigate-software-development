@@ -134,6 +134,120 @@ class GateChecks(unittest.TestCase):
         result = dict(gate.analyze(events), changed=["README.md"])
         self.assertTrue(gate.judge(gate.CASES["B1"], result))
 
+    def test_no_plan_implementation_case_preserves_user_instruction(self):
+        self.assertEqual(gate.CASES["I1"].prompt,
+                         "直接改，不用写方案：README 里的‘限届上下文’改成‘限界上下文’。")
+        self.assertEqual(gate.CASES["I1"].expect, "implement_no_plan")
+        self.assertEqual(gate.CASES["I2"].expect, "implement")
+
+    def test_no_plan_implementation_accepts_target_write_without_plan(self):
+        result = dict(gate.analyze([assistant(write())]), changed=["README.md"])
+        self.assertEqual(gate.judge(gate.CASES["I1"], result), [])
+
+    def test_no_plan_implementation_still_requires_write_and_target_change(self):
+        for blocks, changed in (([], []), ([], ["README.md"]), ([write()], []),
+                                ([write("unrelated.md")], ["unrelated.md"])):
+            with self.subTest(changed=changed, blocks=blocks):
+                result = dict(gate.analyze([assistant(*blocks)]), changed=changed)
+                self.assertTrue(gate.judge(gate.CASES["I1"], result))
+
+    def test_no_plan_implementation_rejects_visible_plan_before_or_after_write(self):
+        for plan in (PLAN, "## 需求分析\n解释"):
+            for blocks in ((text(plan), write()), (write(), text(plan))):
+                with self.subTest(plan=plan, blocks=blocks):
+                    result = dict(gate.analyze([assistant(*blocks)]), changed=["README.md"])
+                    self.assertTrue(gate.judge(gate.CASES["I1"], result))
+
+    def test_shortening_request_still_requires_plan(self):
+        result = dict(gate.analyze([assistant(write("shop/coupon.py"))]), changed=["shop/coupon.py"])
+        self.assertTrue(gate.judge(gate.CASES["I2"], result))
+        result = dict(gate.analyze([assistant(text(), write("shop/coupon.py"))]), changed=["shop/coupon.py"])
+        self.assertEqual(gate.judge(gate.CASES["I2"], result), [])
+
+    def test_html_comments_do_not_supply_visible_plan_or_section_content(self):
+        hidden_plans = ("<!--\n" + PLAN + "\n-->", "<!--\n" + PLAN,
+                        "\n".join(h + "\n<!-- 隐藏正文 -->" for h in gate.HEADINGS),
+                        "\n".join(h + "\n<!-- 隐藏\n正文 -->" for h in gate.HEADINGS))
+        for plan in hidden_plans:
+            with self.subTest(plan=plan):
+                self.assertFalse(gate.headings_in_order(plan))
+                result = dict(gate.analyze([assistant(text(plan), write())]), changed=["README.md"])
+                self.assertTrue(gate.judge(gate.CASES["B1"], result))
+
+    def test_comment_and_fence_state_do_not_hide_later_visible_plan(self):
+        prefixes = ("```html\n<!-- 未闭合的字面注释\n```\n",
+                    "```html <!-- 字面注释\n```\n",
+                    "<!--\n``` 隐藏的围栏\n-->\n",
+                    "<!-- 第一条 --> <!-- 第二条\n结束 -->\n",
+                    "代码标记 `<!--` 是字面量。\n",
+                    "> <!-- 引用中的未闭合注释\n")
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix):
+                self.assertTrue(gate.headings_in_order(prefix + PLAN))
+
+    def test_inline_html_comments_preserve_surrounding_visible_content(self):
+        plan = "\n".join(h + "\n可见<!-- 隐藏 -->内容。" for h in gate.HEADINGS)
+        self.assertEqual(gate.visible_prose(plan), "\n".join(h + "\n可见内容。" for h in gate.HEADINGS))
+        result = dict(gate.analyze([assistant(text(plan), write())]), changed=["README.md"])
+        self.assertEqual(gate.judge(gate.CASES["B1"], result), [])
+
+    def test_separate_replies_cannot_combine_into_plan(self):
+        replies = [assistant(text(h + "\n具体内容。")) for h in gate.HEADINGS]
+        for case_id, events, changed in (("B1", [*replies, assistant(write())], ["README.md"]),
+                                        ("A1", replies, [])):
+            with self.subTest(case_id=case_id):
+                result = dict(gate.analyze(events), changed=changed)
+                self.assertTrue(gate.headings_in_order(result["before"]))
+                self.assertTrue(gate.judge(gate.CASES[case_id], result))
+        for case_id, changed, blocks in (("B1", ["README.md"], [write()]), ("A1", [], [])):
+            with self.subTest(complete_second_reply=case_id):
+                events = [assistant(text("<!--")), assistant(text(), *blocks)]
+                result = dict(gate.analyze(events), changed=changed)
+                self.assertEqual(gate.judge(gate.CASES[case_id], result), [])
+
+    def test_text_blocks_in_one_reply_can_supply_complete_plan(self):
+        blocks = [text(h + "\n具体内容。") for h in gate.HEADINGS]
+        result = dict(gate.analyze([assistant(*blocks, write())]), changed=["README.md"])
+        self.assertEqual(result["before_messages"], [PLAN])
+        self.assertEqual(gate.judge(gate.CASES["B1"], result), [])
+        result = dict(gate.analyze([assistant(*blocks)]), changed=[])
+        self.assertEqual(gate.judge(gate.CASES["A1"], result), [])
+
+    def test_main_reply_boundaries_exclude_child_and_post_write_text(self):
+        events = [assistant(text(), parent="task-1"),
+                  assistant(text("只读进度"), write(), text())]
+        result = dict(gate.analyze(events), changed=["README.md"])
+        self.assertEqual(result["before_messages"], ["只读进度"])
+        self.assertTrue(gate.judge(gate.CASES["B1"], result))
+
+    def test_missing_reply_boundaries_do_not_fall_back_to_joined_text(self):
+        result = {"before": PLAN, "all": PLAN, "writes": ["Edit:README.md"], "changed": ["README.md"]}
+        self.assertTrue(gate.judge(gate.CASES["B1"], result))
+        result.update(writes=[], changed=[])
+        self.assertTrue(gate.judge(gate.CASES["A1"], result))
+
+    def test_no_plan_cases_check_each_visible_reply_independently(self):
+        replies = [assistant(text("<!--")), assistant(text())]
+        for case_id, events, changed in (("I1", [*replies, assistant(write())], ["README.md"]),
+                                        ("E1", replies, [])):
+            with self.subTest(case_id=case_id):
+                result = dict(gate.analyze(events), changed=changed)
+                self.assertTrue(gate.judge(gate.CASES[case_id], result))
+
+    def test_no_plan_cases_accept_only_hidden_comment_headings(self):
+        hidden = "<!--\n" + PLAN + "\n-->"
+        for case_id, events, changed in (("I1", [assistant(text(hidden), write())], ["README.md"]),
+                                        ("E1", [assistant(text(hidden), text("函数解释。"))], [])):
+            with self.subTest(case_id=case_id):
+                result = dict(gate.analyze(events), changed=changed)
+                self.assertEqual(gate.judge(gate.CASES[case_id], result), [])
+
+    def test_missing_reply_boundaries_cannot_prove_no_plan(self):
+        for case_id, writes, changed in (("I1", ["Edit:README.md"], ["README.md"]), ("E1", [], [])):
+            with self.subTest(case_id=case_id):
+                result = {"before": "", "all": "简短说明。", "writes": writes, "changed": changed}
+                self.assertTrue(gate.judge(gate.CASES[case_id], result))
+
     def test_code_fence_and_empty_headings_are_not_plan(self):
         for plan in ("```markdown\n" + PLAN + "\n```", "\n".join("> " + l for l in PLAN.splitlines()), "\n".join(gate.HEADINGS),
                      "## 验收标准\n内容\n## 开发思路\n内容\n## 需求分析\n内容"):
@@ -147,7 +261,8 @@ class GateChecks(unittest.TestCase):
             with self.subTest(opening=opening, false_close=false_close):
                 plan = opening + "\n" + false_close + "\n" + PLAN
                 self.assertFalse(gate.headings_in_order(plan))
-                result = {"before": plan, "all": plan, "writes": ["Edit:README.md"], "changed": ["README.md"]}
+                result = {"before": plan, "all": plan, "before_messages": [plan], "all_messages": [plan],
+                          "writes": ["Edit:README.md"], "changed": ["README.md"]}
                 self.assertTrue(gate.judge(gate.CASES["B1"], result))
 
     def test_visible_plan_after_valid_fence_still_passes(self):
@@ -167,26 +282,171 @@ class GateChecks(unittest.TestCase):
 
     def test_question_cannot_write_or_have_unobserved_changes(self):
         for writes, changed in ((["Bash:touch x"], []), ([], ["x"])):
-            result = {"before": "", "all": "解释", "writes": writes, "changed": changed}
+            result = {"before": "", "all": "解释", "before_messages": [], "all_messages": ["解释"],
+                      "writes": writes, "changed": changed}
             self.assertTrue(gate.judge(gate.CASES["E1"], result))
 
     def test_question_rejects_plan(self):
         for plan in (PLAN, "## 需求分析\n解释"):
-            result = {"before": plan, "all": plan, "writes": [], "changed": []}
+            result = {"before": plan, "all": plan, "before_messages": [plan], "all_messages": [plan],
+                      "writes": [], "changed": []}
             self.assertTrue(gate.judge(gate.CASES["E1"], result))
 
     def test_plan_only_cannot_write_even_if_file_reverted(self):
-        result = {"before": PLAN, "all": PLAN, "writes": ["Edit:x"], "changed": []}
+        result = {"before": PLAN, "all": PLAN, "before_messages": [PLAN], "all_messages": [PLAN],
+                  "writes": ["Edit:x"], "changed": []}
         self.assertTrue(gate.judge(gate.CASES["A1"], result))
 
     def test_plan_only_detects_unobserved_file_changes(self):
-        result = {"before": PLAN, "all": PLAN, "writes": [], "changed": ["x"]}
+        result = {"before": PLAN, "all": PLAN, "before_messages": [PLAN], "all_messages": [PLAN],
+                  "writes": [], "changed": ["x"]}
         self.assertTrue(gate.judge(gate.CASES["A1"], result))
 
     def test_implementation_requires_observed_write_and_target_change(self):
         for writes, changed in (([], []), ([], ["README.md"]), (["Edit:x"], ["unrelated.md"])):
-            result = {"before": PLAN, "all": PLAN, "writes": writes, "changed": changed}
+            result = {"before": PLAN, "all": PLAN, "before_messages": [PLAN], "all_messages": [PLAN],
+                      "writes": writes, "changed": changed}
             self.assertTrue(gate.judge(gate.CASES["B1"], result))
+
+
+class DocumentScopeChecks(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.target = "docs/specs/coupon.md"
+        self.document = self.root / self.target
+        self.document.parent.mkdir(parents=True)
+        self.document.write_text("# 满减券规格\n\n待实现。\n", encoding="utf-8")
+
+    def check(self, *blocks, changed=None, case_id="J2", plan=PLAN):
+        result = dict(gate.analyze([assistant(text(plan), *blocks)]),
+                      changed=[self.target] if changed is None else changed,
+                      fixture_root=self.root)
+        return gate.judge(gate.CASES[case_id], result)
+
+    def bash(self, command):
+        return {"type": "tool_use", "name": "Bash", "input": {"command": command}}
+
+    def test_j1_consultation_stays_read_only(self):
+        result = dict(gate.analyze([assistant(text())]), changed=[])
+        self.assertEqual(gate.judge(gate.CASES["J1"], result), [])
+        result = dict(gate.analyze([assistant(text(), write(self.target))]), changed=[])
+        self.assertTrue(gate.judge(gate.CASES["J1"], result))
+
+    def test_document_scope_accepts_normalized_paths_and_known_reads(self):
+        reads = [{"type": "tool_use", "name": name, "input": {}} for name in ("Read", "Grep", "Glob", "Skill")]
+        for path in (self.target, "./" + self.target, str(self.document)):
+            with self.subTest(path=path):
+                self.assertEqual(self.check(*reads, self.bash("git status && cat README.md"), write(path)), [])
+
+    def test_document_scope_accepts_cd_as_read_command_argument(self):
+        for command in ("grep cd README.md", "echo cd", "git grep cd", "cat cd", "git -C cd status",
+                        "which cd", "command -v cd", "xargs grep cd", "grep cd README.md && echo cd",
+                        "grep cd README.md | head -1", "echo cd\ncat README.md", "pwd # cd\nls"):
+            with self.subTest(command=command):
+                self.assertEqual(self.check(self.bash(command), write(self.target)), [])
+
+    def test_document_scope_rejects_executed_cd_in_every_command_segment(self):
+        for command in ("cd", "cd docs", "cd docs && cat specs/coupon.md", "pwd && cd docs",
+                        "pwd||cd docs", "pwd;cd docs", "pwd | cd docs", "pwd\ncd docs",
+                        "pwd &&\ncd docs", "pwd # inspect\ncd docs", '"cd" docs', "c\\d docs",
+                        "xargs cd", "xargs xargs cd"):
+            with self.subTest(command=command):
+                # 旧用例允许只读 Shell 调整目录，仅规格模式需要拒绝它。
+                self.assertFalse(gate.is_write_command(command))
+                self.assertTrue(self.check(self.bash(command), write(self.target)))
+
+    def test_document_scope_accepts_only_explicit_parent_directory_mkdir(self):
+        for command in ("mkdir -p docs/specs", "mkdir -p docs docs/specs", "mkdir -- docs/specs",
+                        "mkdir -p " + str(self.document.parent)):
+            with self.subTest(command=command):
+                self.assertEqual(self.check(self.bash(command), write(self.target)), [])
+        for command in ("mkdir -p scratch", "mkdir -p docs/specs/unrelated", "mkdir -m 777 docs/specs",
+                        "mkdir -p docs/specs && touch shop/new.py", "mkdir -p $TARGET", "mkdir -p docs/*"):
+            with self.subTest(command=command):
+                self.assertTrue(self.check(self.bash(command), write(self.target)))
+
+    def test_doc_only_rejects_code_writes_even_if_restored(self):
+        self.assertTrue(self.check(write("shop/coupon.py"), write("shop/coupon.py"), write(self.target)))
+
+    def test_doc_only_rejects_test_build_git_and_unparsed_shell_writes(self):
+        for command in ("python3 -m unittest", "pytest", "npm run build", "git add -A", "git commit -m docs",
+                        "git switch -c spec", "git status # query\nrm shop/coupon.py", "echo x > " + self.target,
+                        "python3 -c 'pass'", "cd docs && cat specs/coupon.md"):
+            with self.subTest(command=command):
+                self.assertTrue(self.check(self.bash(command), write(self.target)))
+
+    def test_doc_only_rejects_unknown_tools_and_missing_paths(self):
+        for block in (write(""), {"type": "tool_use", "name": "Edit", "input": {}},
+                      {"type": "tool_use", "name": "NewWriteTool", "input": {"file_path": self.target}}):
+            with self.subTest(block=block):
+                self.assertTrue(self.check(block, write(self.target)))
+
+    def test_doc_only_preserves_only_explicit_automatic_memory_exemption(self):
+        automatic_memory = str(gate.HARNESS_PROJECTS / "fixture" / "memory" / "MEMORY.md")
+        self.assertEqual(self.check(write(automatic_memory), write(self.target)), [])
+        for path in (".claude/settings.json", ".claude/skills/example/SKILL.md"):
+            with self.subTest(path=path):
+                self.assertTrue(self.check(write(path), write(self.target)))
+
+    def test_doc_only_rejects_outside_and_ambiguous_paths(self):
+        for path in ("../docs/specs/coupon.md", "/tmp/docs/specs/coupon.md", "docs/../docs/specs/coupon.md",
+                     "~/docs/specs/coupon.md", "${ROOT}/docs/specs/coupon.md", None, 3):
+            with self.subTest(path=path):
+                self.assertTrue(self.check(write(path), write(self.target)))
+
+    def test_doc_only_rejects_symlink_documents_and_ancestors(self):
+        self.document.unlink()
+        self.document.symlink_to(self.root / "elsewhere.md")
+        (self.root / "elsewhere.md").write_text("outside approved document")
+        self.assertTrue(self.check(write(self.target)))
+        self.document.unlink()
+        self.document.parent.rmdir()
+        self.document.parent.symlink_to(self.root)
+        self.assertTrue(self.check(write(self.target)))
+
+    def test_doc_only_requires_actual_nonempty_regular_document(self):
+        self.document.unlink()
+        self.assertTrue(self.check(write(self.target)))
+        self.document.write_text("  \n")
+        self.assertTrue(self.check(write(self.target)))
+        self.document.unlink()
+        self.document.mkdir()
+        self.assertTrue(self.check(write(self.target)))
+
+    def test_doc_only_requires_observed_document_write_and_target_change(self):
+        self.assertTrue(self.check())
+        self.assertTrue(self.check(self.bash("mkdir -p docs/specs")))
+        self.assertTrue(self.check(write(self.target), changed=[]))
+        self.assertTrue(self.check(write(self.target), changed=[self.target, "KNOWLEDGE.md"]))
+
+    def test_doc_only_requires_plan_before_directory_creation(self):
+        events = [assistant(self.bash("mkdir -p docs/specs"), text(), write(self.target))]
+        result = dict(gate.analyze(events), changed=[self.target], fixture_root=self.root)
+        self.assertTrue(gate.judge(gate.CASES["J2"], result))
+
+    def test_doc_only_uses_untruncated_child_tool_events(self):
+        long_input = {"irrelevant": "x" * 300, "file_path": "shop/coupon.py"}
+        child = {"type": "tool_use", "name": "Edit", "input": long_input}
+        events = [assistant(text()), assistant(child, parent="child"), assistant(write(self.target))]
+        result = dict(gate.analyze(events), changed=[self.target], fixture_root=self.root)
+        self.assertEqual(result["tool_events"][0]["input"], long_input)
+        self.assertNotIn("shop/coupon.py", result["writes"][0])
+        self.assertTrue(gate.judge(gate.CASES["J2"], result))
+
+    def test_doc_only_updates_existing_path_without_competing_document(self):
+        existing = "docs/requirements/coupon.md"
+        document = self.root / existing
+        document.parent.mkdir(parents=True)
+        document.write_text("# 已有规格\n修订 r2\n")
+        self.assertEqual(self.check(write(existing), changed=[existing], case_id="J3"), [])
+        self.assertTrue(self.check(write(existing), write(self.target), changed=[existing], case_id="J3"))
+
+    def test_strict_document_scope_does_not_restrict_legacy_implementation(self):
+        result = dict(gate.analyze([assistant(text(), self.bash("python3 -m unittest"), write("README.md"))]),
+                      changed=["README.md", "KNOWLEDGE.md"])
+        self.assertEqual(gate.judge(gate.CASES["B1"], result), [])
 
 
 class InvocationChecks(unittest.TestCase):
@@ -292,6 +552,55 @@ class InvocationChecks(unittest.TestCase):
             gate.run_once("B1", 0, self.args, self.logs)
         command = run.call_args_list[0].args[0]
         self.assertEqual(command[command.index("--max-budget-usd") + 1], "1.0")
+
+    def test_no_plan_implementation_checks_real_target_and_keeps_summary(self):
+        def cli(command, root, timeout):
+            target = root / "README.md"
+            target.write_text(target.read_text().replace("限届上下文", "限界上下文"), encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stream(assistant(write(str(target))), success()), "")
+
+        with patch.object(gate, "run_cli", side_effect=cli):
+            result = gate.run_once("I1", 0, self.args, self.logs)
+        summary = json.loads((self.logs / "I1-0.summary.json").read_text())
+        self.assertEqual(result, ("I1", [], 0.12))
+        self.assertEqual(summary["status"], "PASS")
+        self.assertEqual(summary["changed"], ["README.md"])
+        self.assertEqual(summary["plan_length"], 0)
+        self.assertEqual(summary["cost_usd"], 0.12)
+
+    def test_doc_only_end_to_end_checks_fixture_before_cleanup(self):
+        for case_id in ("J2", "J3"):
+            for restored_code_write in (False, True):
+                with self.subTest(case_id=case_id, restored_code_write=restored_code_write):
+                    def cli(command, root, timeout):
+                        self.assertNotIn("--allowedTools", command)
+                        target = root / gate.CASES[case_id].allowed_paths[0]
+                        self.assertEqual(target.exists(), case_id == "J3")
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_text("# 满减券规格\n\n修订 r2，待实施。\n", encoding="utf-8")
+                        blocks = [write(str(target))]
+                        if restored_code_write:
+                            code = root / "shop/coupon.py"
+                            original = code.read_text()
+                            code.write_text("wrong implementation")
+                            code.write_text(original)
+                            blocks.extend([write(str(code)), write(str(code))])
+                        return subprocess.CompletedProcess(command, 0, stream(assistant(text(), *blocks), success()), "")
+
+                    with patch.object(gate, "run_cli", side_effect=cli):
+                        result = gate.run_once(case_id, 0, self.args, self.logs)
+                    summary = json.loads((self.logs / f"{case_id}-0.summary.json").read_text())
+                    self.assertEqual(summary["changed"], list(gate.CASES[case_id].allowed_paths))
+                    self.assertEqual(summary["status"], "FAIL" if restored_code_write else "PASS")
+                    self.assertEqual(bool(result[1]), restored_code_write)
+
+    def test_doc_only_rejects_missing_artifact_in_real_fixture(self):
+        def cli(command, root, timeout):
+            target = root / gate.CASES["J2"].allowed_paths[0]
+            return subprocess.CompletedProcess(command, 0, stream(assistant(text(), write(str(target))), success()), "")
+        with patch.object(gate, "run_cli", side_effect=cli):
+            result = gate.run_once("J2", 0, self.args, self.logs)
+        self.assertTrue(any("非空普通文档" in failure for failure in result[1]))
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX process-group regression")

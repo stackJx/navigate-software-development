@@ -3,9 +3,11 @@
 
 每条用例在一次性 fixture 仓库中执行：把 skill 安装到 `.claude/skills/`，
 以 `/navigate-software-development <输入>` 调用，解析 stream-json 事件与运行后的文件状态，断言：
-  - 首个写操作之前是否已按顺序输出三个二级标题；
+  - 首个写操作之前是否已在单条可见回复中按顺序输出三个二级标题；
   - 纯方案/纯问答用例是否没有任何写操作；
+  - 明确禁止方案的实现用例是否省略方案，且实际改动目标文件；
   - 知识沉淀是否优先写入已有约定文件；
+  - 仅规格任务是否只写指定文档及其必要父目录，并留下非空普通文档；
   - 方案篇幅是否符合预期分档（启发式软指标，标 [软]，不计入失败）。
 API 报错、超时等运行故障标 [错误]，停止派发未开始的请求并标 SKIPPED。
 默认串行；重复运行混有错误/跳过时为 INCOMPLETE，不会因只统计有效运行而 PASS。
@@ -88,10 +90,12 @@ FIXTURE = {
 PROJECT_CLAUDE_MD = "# 项目约定\n\n- 运行测试：`python3 -m unittest`\n"
 
 # expect: plan_only=必须出方案且零写操作；implement=方案先于首个写操作；qa=不出方案且零写操作
+# implement_no_plan=明确禁止方案，但仍必须观测到写操作与目标文件变更
+# doc_only=方案先于写操作，且只允许指定文档（允许路径见 allowed_paths）
 # tier: short=极简档 / not_short=至少标准档 / full=完整档 / None=不检查篇幅
 # kb: existing=已有约定文件时不得新建 KNOWLEDGE.md / create=无约定文件时应新建（软） / None=不检查
 # files: 在基础 fixture 上追加或覆盖的文件
-Case = namedtuple("Case", "prompt expect tier kb files", defaults=(None, None, None))
+Case = namedtuple("Case", "prompt expect tier kb files allowed_paths", defaults=(None, None, None, ()))
 COUPON_BUG = "满 100 减 20 的券，订单正好 100 元时用不了。修一下。"
 CASES = {
     "A1": Case("给商品列表加按分类筛选，只要需求和开发思路，先不写代码。", "plan_only"),
@@ -107,9 +111,18 @@ CASES = {
     "E1": Case("shop/coupon.py 里的 can_use 是干什么的？", "qa"),
     "E3": Case("解释一下什么是限界上下文。", "qa"),
     "G6": Case(COUPON_BUG, "implement", "not_short", "existing", {"CLAUDE.md": PROJECT_CLAUDE_MD}),
-    "I1": Case("直接改，不用写方案：README 里的‘限届上下文’改成‘限界上下文’。", "implement", "short"),
+    "I1": Case("直接改，不用写方案：README 里的‘限届上下文’改成‘限界上下文’。", "implement_no_plan"),
     "I2": Case("满 100 减 20 的券正好 100 元用不了，直接改就行别啰嗦。", "implement"),
     "I3": Case("给商品加一个 nickname 字段并能在列表里返回，出一份详细方案，先不写代码。", "plan_only", "full"),
+    "J1": Case("为满减券边界修复制定轻量 SDD 方案，只在对话讨论，不创建或修改任何文件，也不实施。", "plan_only"),
+    "J2": Case("将满减券满 100 元可用的修复规格保存到 docs/specs/coupon.md，列出验收条件和待实施任务。"
+               "只授权写这一份规格和创建必要父目录，暂不实现、不运行测试或构建、不变更 Git。", "doc_only",
+               allowed_paths=("docs/specs/coupon.md",)),
+    "J3": Case("已有规格 docs/requirements/coupon.md 是本功能的唯一维护入口。把可用边界改为满 100 元，"
+               "在原文档同步修订、验收条件和任务状态。只更新这份规格，不新建其他文档，不实现、测试或变更 Git。",
+               "doc_only", files={"docs/requirements/coupon.md": "# 满减券规格\n\n修订 r1，待实施。\n"
+                                   "AC-01：订单大于 100 元时可用。\nT-01：实现 AC-01，未开始。\n"},
+               allowed_paths=("docs/requirements/coupon.md",)),
 }
 TARGETS = {
     "A2": "shop/coupon.py", "B1": "README.md", "B2": "shop/order.py", "B3": "config/http.yaml",
@@ -132,18 +145,20 @@ def make_fixture(root: Path, skill_root: Path, extra: dict) -> None:
         subprocess.run(cmd, cwd=root, check=True)
 
 
-def is_read_command(words: list) -> bool:
+def is_read_command(words: list, *, allow_cd: bool = True) -> bool:
     """只放行常见且可确认的查询；不是完整 shell/每种工具的参数解析器。"""
     if not words:
         return True
     name, *args = words
+    if name == "cd":
+        return allow_cd
     if name in READ_COMMANDS:
         return True
     if name == "command":
         return bool(args) and args[0] in {"-v", "-V"}
     if name == "xargs":
         # 仅支持无 xargs 选项的显式命令；复杂替换/执行方式保守按写处理。
-        return bool(args) and not args[0].startswith("-") and is_read_command(args)
+        return bool(args) and not args[0].startswith("-") and is_read_command(args, allow_cd=allow_cd)
     if name in {"rg", "grep"}:
         return not any(a.startswith(("--pre", "--hostname-bin")) for a in args)
     if name == "find":
@@ -201,7 +216,7 @@ def strip_shell_comments(cmd: str) -> str:
     return "".join(out)
 
 
-def is_write_command(cmd: str) -> bool:
+def is_write_command(cmd: str, *, allow_cd: bool = True) -> bool:
     cmd = strip_shell_comments(cmd)
     # 引号内命令替换也可能写文件；heredoc、分组等复杂语法统一保守处理。
     if re.search(r"\$\(|`", re.sub(r"'[^']*'", "", cmd)):
@@ -231,7 +246,7 @@ def is_write_command(cmd: str) -> bool:
             i += 2
             continue
         if token in {"|", "||", "&&"} or set(token) <= {";", "\n"}:
-            if not is_read_command(words):
+            if not is_read_command(words, allow_cd=allow_cd):
                 return True
             words = []
         elif token and set(token) <= set("|&;<>()\n"):
@@ -240,7 +255,7 @@ def is_write_command(cmd: str) -> bool:
         else:
             words.append(token)
         i += 1
-    return not is_read_command(words)
+    return not is_read_command(words, allow_cd=allow_cd)
 
 
 def is_write(block: dict) -> bool:
@@ -251,7 +266,7 @@ def is_write(block: dict) -> bool:
         try:
             parts = Path(path).resolve().relative_to(HARNESS_PROJECTS.resolve()).parts
             return not (len(parts) >= 3 and parts[1] == "memory")
-        except (ValueError, OSError):
+        except (ValueError, TypeError, OSError):
             return True
     if name == "Bash":
         return is_write_command(block.get("input", {}).get("command", ""))
@@ -259,32 +274,77 @@ def is_write(block: dict) -> bool:
 
 
 def analyze(events: list) -> dict:
-    """返回首个写操作前的文本、写操作列表与全部面向用户的文本。"""
-    before, all_text, writes = [], [], []
+    """保留主会话可见回复边界；拼接文本仅供摘要使用，不作为门禁证明。"""
+    before, all_text, writes, tool_events = [], [], [], []
+    before_messages, all_messages = [], []
     for ev in events:
         if ev.get("type") != "assistant":
             continue
         # 子代理的文本不直接展示给用户，但它的写操作同样计入。
         sidechain = ev.get("parent_tool_use_id") is not None
+        message_before, message_text = [], []
         for block in ev["message"].get("content", []):
             if block.get("type") == "text" and not sidechain:
                 all_text.append(block["text"])
+                message_text.append(block["text"])
                 if not writes:
                     before.append(block["text"])
-            elif block.get("type") == "tool_use" and is_write(block):
-                detail = json.dumps(block.get("input"), ensure_ascii=False)[:120]
-                writes.append(f"{block.get('name')}:{detail}")
-    return {"before": "\n".join(before), "all": "\n".join(all_text), "writes": writes}
+                    message_before.append(block["text"])
+            elif block.get("type") == "tool_use":
+                # 保留完整结构供路径断言使用，不能从面向日志的截断 writes 反解析权限。
+                tool_events.append(block)
+                if is_write(block):
+                    detail = json.dumps(block.get("input"), ensure_ascii=False)[:120]
+                    writes.append(f"{block.get('name')}:{detail}")
+        if message_before:
+            before_messages.append("\n".join(message_before))
+        if message_text:
+            all_messages.append("\n".join(message_text))
+    return {"before": "\n".join(before), "all": "\n".join(all_text), "writes": writes,
+            "before_messages": before_messages, "all_messages": all_messages, "tool_events": tool_events}
 
 
 def visible_prose(text: str) -> str:
-    lines, fence = [], None
+    """过滤围栏、引用和 HTML 注释；围栏中的字面注释不改变正文状态。"""
+    lines, fence, comment = [], None, False
     for line in text.splitlines():
         if fence is not None:
             closing = re.fullmatch(r" {0,3}(`{3,}|~{3,})[ \t]*", line)
             if closing and closing[1][0] == fence[0] and len(closing[1]) >= fence[1]:
                 fence = None
             continue
+        # 被忽略的引用不能把自身的注释状态泄漏到后续主正文。
+        if not comment and line.lstrip().startswith(">"):
+            continue
+        # 围栏信息和内容中的 <!-- 都是字面量，不能开启正文注释。
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if not comment and opening and (opening[1][0] != "`" or "`" not in opening[2]):
+            fence = (opening[1][0], len(opening[1]))
+            continue
+        visible, i = [], 0
+        while i < len(line):
+            if comment:
+                end = line.find("-->", i)
+                if end < 0:
+                    break
+                comment, i = False, end + 3
+            elif line.startswith("<!--", i):
+                comment, i = True, i + 4
+            elif line[i] == "\\" and i + 1 < len(line):
+                visible.append(line[i:i + 2])
+                i += 2
+            elif line[i] == "`":
+                # 同行闭合的代码 span 中，HTML 注释标记仍是字面量。
+                marker = re.match(r"`+", line[i:])[0]
+                closing = re.search(r"(?<!`)" + re.escape(marker) + r"(?!`)", line[i + len(marker):])
+                end = i + len(marker) + closing.end() if closing else i + len(marker)
+                visible.append(line[i:end])
+                i = end
+            else:
+                visible.append(line[i])
+                i += 1
+        line = "".join(visible)
+        # 注释闭合后同一行可能开始可见围栏。
         opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
         if opening and (opening[1][0] != "`" or "`" not in opening[2]):
             fence = (opening[1][0], len(opening[1]))
@@ -321,20 +381,125 @@ def plan_length(text: str) -> int:
     return len(body[: nxt[0]] if nxt else body)
 
 
+def fixture_path(path, root: Path) -> str:
+    """限定在仍存在的 fixture 根下；不解释变量、父级跳转或符号链接。"""
+    if not isinstance(path, str) or not path or re.search(r"[\x00\n\r$`~*?{}]", path):
+        raise ValueError("路径缺失或无法确定")
+    candidate = Path(path)
+    if ".." in candidate.parts:
+        raise ValueError("路径含父级跳转")
+    canonical_root = root.resolve(strict=True)
+    relative = candidate
+    if candidate.is_absolute():
+        # macOS 的 /var 临时目录可由 CLI 报告为 /private/var，允许根本身的这类别名。
+        for prefix in (root.absolute(), canonical_root):
+            try:
+                relative = candidate.relative_to(prefix)
+                break
+            except ValueError:
+                continue
+        else:
+            raise ValueError("路径在 fixture 根外")
+    cursor = canonical_root
+    for part in relative.parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise ValueError("路径包含符号链接")
+    return relative.as_posix()
+
+
+def allowed_doc_mkdir(command: str, root: Path, allowed: set) -> bool:
+    """仅识别独立 mkdir [-p] [--] <字面量父目录...>，不尝试解释任意 shell 写操作。"""
+    if re.search(r"[;&|<>()\n$`*?\[\]{}~\\]", command):
+        return False
+    try:
+        words = shlex.split(command)
+        if not words or words.pop(0) != "mkdir":
+            return False
+        if words and words[0] == "-p":
+            words.pop(0)
+        if words and words[0] == "--":
+            words.pop(0)
+        directories = {parent.as_posix() for doc in allowed for parent in Path(doc).parents if parent != Path(".")}
+        return bool(words) and all(not word.startswith("-") and fixture_path(word, root) in directories for word in words)
+    except (ValueError, OSError, RuntimeError):
+        return False
+
+
+def judge_doc_only(case: Case, result: dict) -> list:
+    """范围硬断言，规格语义仍需人工核查；仅 doc_only 使用此严格规则。"""
+    fails, observed = [], set()
+    root = result.get("fixture_root")
+    if not isinstance(root, Path) or not root.is_dir():
+        return ["仅规格任务缺少仍存在的 fixture，无法验证路径与产物"]
+    allowed = set(case.allowed_paths)
+    if not allowed:
+        return ["仅规格任务未配置允许路径"]
+    if "tool_events" not in result:
+        return ["仅规格任务缺少结构化工具事件，无法验证写入范围"]
+    for block in result["tool_events"]:
+        name, tool_input = block.get("name"), block.get("input", {})
+        if name in {"Read", "Grep", "Glob", "LS", "Skill"}:
+            continue
+        if name in {"Write", "Edit", "MultiEdit"}:
+            # 沿用已明确识别的 CLI 自动记忆豁免，设置与 skill 文件仍受限。
+            if not is_write(block):
+                continue
+            try:
+                path = fixture_path(tool_input.get("file_path"), root)
+                if path not in allowed:
+                    raise ValueError("不在允许路径中")
+                observed.add(path)
+            except (ValueError, OSError, RuntimeError) as exc:
+                fails.append(f"仅规格任务写入路径越界或无法确认：{name}（{exc}）")
+        elif name == "Bash":
+            command = tool_input.get("command", "")
+            # cd 可能改变相对路径基准；在各命令段识别它，不能误拒绝同名查询参数。
+            readable = bool(command) and not is_write_command(command, allow_cd=False)
+            if not readable and not allowed_doc_mkdir(command, root, allowed):
+                fails.append("仅规格任务出现禁止或无法确认范围的 Shell 操作")
+        else:
+            fails.append(f"仅规格任务出现不支持的工具，无法确认写入范围：{name}")
+    changed = set(result["changed"])
+    if changed - allowed:
+        fails.append("仅规格任务改动了未授权文件：" + ", ".join(sorted(changed - allowed)[:3]))
+    for path in sorted(allowed):
+        if path not in observed or path not in changed:
+            fails.append("仅规格任务未观测到指定文档写入与实际变更：" + path)
+        try:
+            normalized = fixture_path(path, root)
+            document = root / normalized
+            if normalized != path or not document.is_file() or not document.read_text(encoding="utf-8").strip():
+                raise ValueError("不是非空普通文档")
+        except (ValueError, OSError, RuntimeError) as exc:
+            fails.append(f"仅规格任务未交付非空普通文档：{path}（{exc}）")
+    return fails
+
+
 def judge(case: Case, result: dict) -> list:
     fails = []
     writes, changed = result["writes"], result["changed"]
+    no_plan = case.expect in {"qa", "implement_no_plan"}
+    if no_plan:
+        messages = result.get("all_messages")
+        if not isinstance(messages, list) or any(not isinstance(message, str) for message in messages):
+            fails.append("缺少主会话可见回复边界，无法验证未输出方案")
+        elif any(re.search(r"^" + re.escape(h) + r"(?=\s|（|\(|$)", visible_prose(message), re.M)
+                 for message in messages for h in HEADINGS):
+            fails.append("纯问答不应套用方案标题" if case.expect == "qa" else "禁止方案任务不应输出方案标题")
     if case.expect == "qa":
-        if any(re.search(r"^" + re.escape(h) + r"(?=\s|（|\(|$)", visible_prose(result["all"]), re.M) for h in HEADINGS):
-            fails.append("纯问答不应套用方案标题")
         if writes or changed:
             fails.append("纯问答出现写操作或文件改动")
         return fails
 
     plan_text = result["before"] if writes else result["all"]
-    if not headings_in_order(plan_text):
-        fails.append("首个写操作前未按顺序输出三个二级标题及非空内容")
-    if case.expect == "implement":
+    if not no_plan:
+        messages = result.get("before_messages")
+        if not isinstance(messages, list) or any(not isinstance(message, str) for message in messages):
+            fails.append("缺少首个写操作前的可见回复边界，无法验证单条完整方案")
+        elif not any(headings_in_order(message) for message in messages):
+            fails.append("首个写操作前未在单条可见回复中按顺序输出三个二级标题及非空内容")
+    if case.expect in {"implement", "implement_no_plan"}:
         if not writes:
             fails.append("实现任务未观测到写操作，无法证明写入顺序")
         target = next((TARGETS[c] for c, candidate in CASES.items() if candidate == case and c in TARGETS), None)
@@ -345,6 +510,8 @@ def judge(case: Case, result: dict) -> list:
             fails.append("纯方案任务出现写操作")
         if changed:
             fails.append("纯方案任务改动了文件：" + ", ".join(changed[:3]))
+    if case.expect == "doc_only":
+        fails.extend(judge_doc_only(case, result))
 
     length = plan_length(plan_text)
     if case.tier == "short" and length > SHORT_PLAN_MAX:
@@ -428,7 +595,8 @@ def run_once(case_id: str, idx: int, args, log_dir: Path) -> tuple:
                    "--max-turns", str(args.max_turns), "--max-budget-usd", str(args.max_budget_usd)]
             if args.model:
                 cmd += ["--model", args.model]
-            cmd += ["--allowedTools", *TEST_TOOLS]
+            if case.expect != "doc_only":
+                cmd += ["--allowedTools", *TEST_TOOLS]
             proc = run_cli(cmd, root, args.timeout)
             stdout, stderr, returncode = proc.stdout, proc.stderr, proc.returncode
         except subprocess.TimeoutExpired as exc:
@@ -448,35 +616,36 @@ def run_once(case_id: str, idx: int, args, log_dir: Path) -> tuple:
                 changed = sorted(line[3:].strip() for line in status.stdout.splitlines())
         except (OSError, subprocess.SubprocessError) as exc:
             errors.append(f"[错误] 无法读取文件状态：{str(exc)[:200]}")
-    events = []
-    for line in stdout.splitlines():
-        if not line.strip():
-            continue
+        events = []
+        for line in stdout.splitlines():
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+                if not isinstance(event, dict):
+                    raise ValueError("事件不是 JSON 对象")
+                events.append(event)
+            except (json.JSONDecodeError, ValueError):
+                errors.append("[错误] 无法解析完整的 stream-json 事件")
+                break
+        finals = [e for e in events if e.get("type") == "result"]
+        final = finals[-1] if finals else {}
+        cost = final.get("total_cost_usd")
+        if cost is not None and (not isinstance(cost, (int, float)) or isinstance(cost, bool) or not math.isfinite(cost) or cost < 0):
+            cost = None
+            errors.append("[错误] 非法费用字段")
+        if returncode not in (None, 0):
+            errors.append(f"[错误] claude 退出码 {returncode}：{stderr.strip()[:200]}")
+        if len(finals) != 1 or final.get("is_error") is not False or final.get("subtype") != "success":
+            detail = final.get("result") or final.get("subtype") or stderr.strip() or "缺少完成事件"
+            errors.append(f"[错误] 完成结果无效：{str(detail)[:200]}")
         try:
-            event = json.loads(line)
-            if not isinstance(event, dict):
-                raise ValueError("事件不是 JSON 对象")
-            events.append(event)
-        except (json.JSONDecodeError, ValueError):
-            errors.append("[错误] 无法解析完整的 stream-json 事件")
-            break
-    finals = [e for e in events if e.get("type") == "result"]
-    final = finals[-1] if finals else {}
-    cost = final.get("total_cost_usd")
-    if cost is not None and (not isinstance(cost, (int, float)) or isinstance(cost, bool) or not math.isfinite(cost) or cost < 0):
-        cost = None
-        errors.append("[错误] 非法费用字段")
-    if returncode not in (None, 0):
-        errors.append(f"[错误] claude 退出码 {returncode}：{stderr.strip()[:200]}")
-    if len(finals) != 1 or final.get("is_error") is not False or final.get("subtype") != "success":
-        detail = final.get("result") or final.get("subtype") or stderr.strip() or "缺少完成事件"
-        errors.append(f"[错误] 完成结果无效：{str(detail)[:200]}")
-    try:
-        result = {**analyze(events), "changed": changed}
-    except (KeyError, TypeError, AttributeError) as exc:
-        errors.append(f"[错误] 事件结构无效：{exc}")
-        result = {"before": "", "all": "", "writes": [], "changed": changed}
-    fails = errors or judge(case, result)
+            result = {**analyze(events), "changed": changed, "fixture_root": root}
+        except (KeyError, TypeError, AttributeError) as exc:
+            errors.append(f"[错误] 事件结构无效：{exc}")
+            result = {"before": "", "all": "", "before_messages": [], "all_messages": [],
+                      "writes": [], "changed": changed}
+        fails = errors or judge(case, result)
     summary = {"case": case_id, "run": idx, "status": run_status(fails), "fails": fails,
                "writes": result["writes"][:10], "changed": changed, "returncode": returncode,
                "plan_length": plan_length(result["before"] if result["writes"] else result["all"]),
